@@ -1,0 +1,86 @@
+version: "1"
+
+defaults:
+  require_approval_at: medium   # low | medium | high | critical
+  block_at: critical
+
+rules:
+  # Hard block: destructive artisan commands
+  - name: block-data-destruction
+    tool: run_artisan
+    block: true
+    conditions:
+      - field: command
+        matches: "^migrate:fresh|^db:wipe|^migrate:reset"
+
+  # High risk: deploying to production branch
+  - name: deploy-production
+    tool: deploy_service
+    risk: high
+    conditions:
+      - field: branch
+        matches: "^main$|^master$|^production$"
+
+  # Medium risk: restarting web-facing services
+  - name: restart-web-services
+    tool: restart_service
+    risk: medium
+    conditions:
+      - field: service
+        matches: "^nginx$|^php8\\.[0-9]-fpm$|^php-fpm$"
+
+  # Low risk: restarting queue workers
+  - name: restart-queue
+    tool: queue_restart
+    risk: low
+
+  # Low risk: cache management artisan commands
+  - name: artisan-cache-commands
+    tool: run_artisan
+    risk: low
+    conditions:
+      - field: command
+        matches: "^cache:clear$|^config:cache$|^config:clear$|^route:cache$|^route:clear$|^view:clear$|^view:cache$"
+
+  # Low risk: horizon management
+  - name: artisan-horizon
+    tool: run_artisan
+    risk: low
+    conditions:
+      - field: command
+        matches: "^horizon:pause$|^horizon:continue$|^horizon:terminate$"
+
+  # High risk: database migrations
+  - name: artisan-migrate
+    tool: run_artisan
+    risk: high
+    conditions:
+      - field: command
+        matches: "^migrate$|^migrate:rollback"
+
+  # Low risk: read-only artisan commands
+  - name: artisan-status
+    tool: run_artisan
+    risk: low
+    conditions:
+      - field: command
+        matches: "^migrate:status$|^queue:failed$|^about$"
+
+artisan_allowlist:
+  - "cache:clear"
+  - "config:cache"
+  - "config:clear"
+  - "route:cache"
+  - "route:clear"
+  - "view:clear"
+  - "view:cache"
+  - "queue:restart"
+  - "queue:failed"
+  - "storage:link"
+  - "migrate"
+  - "migrate:rollback"
+  - "migrate:status"
+  - "horizon:pause"
+  - "horizon:continue"
+  - "horizon:terminate"
+  - "about"
