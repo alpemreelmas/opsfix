@@ -6,17 +6,26 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/alperen/opsfix/adapter"
+	"github.com/alperen/opsfix/internal/dispatch"
 )
 
 const protocolVersion = "2024-11-05"
 
+// MCPDispatcher is the interface the Server requires from its dispatcher.
+type MCPDispatcher interface {
+	Dispatch(req dispatch.Request) dispatch.Response
+	AllTools() []adapter.ToolDefinition
+}
+
 type Server struct {
-	dispatcher *Dispatcher
+	dispatcher MCPDispatcher
 	reader     *bufio.Reader
 	encoder    *json.Encoder
 }
 
-func New(dispatcher *Dispatcher) *Server {
+func New(dispatcher MCPDispatcher) *Server {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
 
@@ -84,7 +93,7 @@ func (s *Server) handleInitialize(req Request) {
 		ProtocolVersion: protocolVersion,
 		ServerInfo: ServerInfo{
 			Name:    "opsfix",
-			Version: "0.1.0",
+			Version: "0.2.0",
 		},
 		Capabilities: Capabilities{
 			Tools: map[string]any{},
@@ -94,7 +103,16 @@ func (s *Server) handleInitialize(req Request) {
 }
 
 func (s *Server) handleToolsList(req Request) {
-	s.sendResult(req.ID, ToolsListResult{Tools: allTools()})
+	adapterTools := s.dispatcher.AllTools()
+	mcpTools := make([]ToolDefinition, 0, len(adapterTools))
+	for _, t := range adapterTools {
+		mcpTools = append(mcpTools, ToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	s.sendResult(req.ID, ToolsListResult{Tools: mcpTools})
 }
 
 func (s *Server) handleToolCall(req Request) {
@@ -111,8 +129,52 @@ func (s *Server) handleToolCall(req Request) {
 
 	fmt.Fprintf(os.Stderr, "[opsfix] tool call: %s\n", params.Name)
 
-	result := s.dispatcher.Dispatch(params)
-	s.sendResult(req.ID, result)
+	// Extract server and confirmed from arguments
+	server, _ := params.Arguments["server"].(string)
+	confirmed, _ := params.Arguments["confirmed"].(bool)
+
+	dispResp := s.dispatcher.Dispatch(dispatch.Request{
+		Tool:      params.Name,
+		Server:    server,
+		Params:    params.Arguments,
+		Confirmed: confirmed,
+	})
+
+	// Format as MCP ToolResult
+	var text string
+	if dispResp.Error != "" {
+		s.sendResult(req.ID, ToolResult{
+			Content: []ContentBlock{{Type: "text", Text: dispResp.Error}},
+			IsError: true,
+		})
+		return
+	}
+	if dispResp.Blocked {
+		text = fmt.Sprintf("BLOCKED: %s\nRisk: %s\nAudit ID: %s", dispResp.Error, dispResp.Risk, dispResp.AuditID)
+		s.sendResult(req.ID, ToolResult{
+			Content: []ContentBlock{{Type: "text", Text: text}},
+			IsError: true,
+		})
+		return
+	}
+	if dispResp.PendingApproval != "" {
+		text = dispResp.PendingApproval
+		if dispResp.AuditID != "" {
+			text += "\nAudit ID: " + dispResp.AuditID
+		}
+		s.sendResult(req.ID, ToolResult{
+			Content: []ContentBlock{{Type: "text", Text: text}},
+		})
+		return
+	}
+
+	text = dispResp.Output
+	if dispResp.AuditID != "" {
+		text += "\n\nAudit ID: " + dispResp.AuditID
+	}
+	s.sendResult(req.ID, ToolResult{
+		Content: []ContentBlock{{Type: "text", Text: text}},
+	})
 }
 
 func (s *Server) sendResult(id any, result any) {

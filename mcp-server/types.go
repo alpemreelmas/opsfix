@@ -51,21 +51,9 @@ type Capabilities struct {
 }
 
 type ToolDefinition struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	InputSchema JSONSchema  `json:"inputSchema"`
-}
-
-type JSONSchema struct {
-	Type       string              `json:"type"`
-	Properties map[string]Property `json:"properties,omitempty"`
-	Required   []string            `json:"required,omitempty"`
-}
-
-type Property struct {
-	Type        string `json:"type"`
-	Description string `json:"description,omitempty"`
-	Default     any    `json:"default,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema"`
 }
 
 type ToolsListResult struct {

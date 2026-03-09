@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alperen/opsfix/config"
+	"github.com/alperen/opsfix/internal/config"
 )
 
 type poolEntry struct {

@@ -3,14 +3,22 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
-	"github.com/alperen/opsfix/audit"
-	"github.com/alperen/opsfix/config"
-	"github.com/alperen/opsfix/executor"
+	"github.com/alperen/opsfix/internal/audit"
+	"github.com/alperen/opsfix/internal/config"
+	"github.com/alperen/opsfix/internal/dispatch"
+	"github.com/alperen/opsfix/internal/policy"
+	"github.com/alperen/opsfix/internal/ratelimit"
+	"github.com/alperen/opsfix/internal/secret"
+	sshpkg "github.com/alperen/opsfix/internal/ssh"
 	mcpserver "github.com/alperen/opsfix/mcp-server"
-	"github.com/alperen/opsfix/policy"
-	"github.com/alperen/opsfix/scanner"
-	sshpkg "github.com/alperen/opsfix/ssh"
+
+	// Register built-in adapters
+	_ "github.com/alperen/opsfix/adapter/builtin/resources"
+	_ "github.com/alperen/opsfix/adapter/builtin/systemd"
+	// Register community adapters
+	_ "github.com/alperen/opsfix/adapter/community/laravel"
 )
 
 func main() {
@@ -26,12 +34,23 @@ func run() error {
 		cfgPath = "config.yaml"
 	}
 
-	// Load config
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "[opsfix] loaded config: %d servers\n", len(cfg.Servers))
+
+	// Validate SSH key permissions for all servers
+	for _, srv := range cfg.Servers {
+		if err := sshpkg.ValidateKeyFile(srv.KeyPath); err != nil {
+			return fmt.Errorf("ssh key validation: %w", err)
+		}
+		if srv.Bastion != nil {
+			if err := sshpkg.ValidateKeyFile(srv.Bastion.KeyPath); err != nil {
+				return fmt.Errorf("bastion key validation: %w", err)
+			}
+		}
+	}
 
 	// Load policy
 	policyFile, err := policy.Load(cfg.PolicyFile)
@@ -39,27 +58,41 @@ func run() error {
 		return fmt.Errorf("load policy: %w", err)
 	}
 	policyEngine := policy.NewEngine(policyFile)
-	fmt.Fprintf(os.Stderr, "[opsfix] policy loaded: %d rules\n", len(policyFile.Rules))
+	fmt.Fprintf(os.Stderr, "[opsfix] policy: %d rules\n", len(policyFile.Rules))
+
+	// Secret redactor
+	var literals []string
+	if envKey := cfg.Audit.RedactLiteralsEnv; envKey != "" {
+		if val := os.Getenv(envKey); val != "" {
+			literals = strings.Split(val, ",")
+		}
+	}
+	redactor := secret.New(literals)
 
 	// Audit logger
-	auditLogger, err := audit.New(cfg.Audit)
+	auditLogger, err := audit.New(cfg.Audit.FilePath, cfg.Audit.Enabled)
 	if err != nil {
 		return fmt.Errorf("init audit logger: %w", err)
 	}
 	defer auditLogger.Close()
 
+	// Rate limiter
+	rps := cfg.RateLimit.RequestsPerSecond
+	if rps == 0 {
+		rps = 2.0
+	}
+	burst := cfg.RateLimit.Burst
+	if burst == 0 {
+		burst = 10
+	}
+	limiter := ratelimit.New(rps, burst)
+
 	// SSH pool
 	pool := sshpkg.NewPool(cfg.Servers, cfg.SSH)
 	defer pool.Close()
 
-	// Scanner
-	sc := scanner.New(pool)
-
-	// Executor
-	ex := executor.New(pool, policyEngine, auditLogger, policyFile.ArtisanAllowlist)
-
-	// Dispatcher
-	dispatcher := mcpserver.NewDispatcher(sc, ex, pool)
+	// Dispatcher (adapter-based)
+	dispatcher := dispatch.New(pool, policyEngine, auditLogger, limiter, redactor)
 
 	// MCP server
 	srv := mcpserver.New(dispatcher)
