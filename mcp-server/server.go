@@ -157,8 +157,8 @@ func (s *Server) handleToolCall(req Request) {
 		})
 		return
 	}
-	if dispResp.PendingApproval != "" {
-		text = dispResp.PendingApproval
+	if dispResp.PendingApproval {
+		text = fmt.Sprintf("Risk: %s\nTool: %s on server %q\nRe-call with confirmed=true to execute.", dispResp.Risk, params.Name, server)
 		if dispResp.AuditID != "" {
 			text += "\nAudit ID: " + dispResp.AuditID
 		}

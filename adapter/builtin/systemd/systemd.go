@@ -133,6 +133,66 @@ func (a *SystemdAdapter) Execute(tool string, params adapter.Params, exec adapte
 	}
 }
 
+func (a *SystemdAdapter) PreFlight(tool string, params adapter.Params, exec adapter.SSHExecutor) (adapter.PreFlightReport, error) {
+	report := adapter.PreFlightReport{CurrentState: map[string]any{}}
+
+	switch tool {
+	case "service_restart":
+		svc := strParam(params, "service")
+		if svc == "" {
+			report.Blocker = "service_restart: 'service' required"
+			return report, nil
+		}
+		res, err := exec.Run("systemctl", "is-active", svc)
+		if err == nil {
+			report.CurrentState["service_status"] = strings.TrimSpace(res.Stdout)
+		}
+		report.Plan = []string{fmt.Sprintf("systemctl restart %s", svc)}
+	}
+
+	return report, nil
+}
+
+func (a *SystemdAdapter) Verify(tool string, params adapter.Params, result adapter.Result, exec adapter.SSHExecutor) (adapter.VerifyReport, error) {
+	switch tool {
+	case "service_restart":
+		svc := strParam(params, "service")
+		res, err := exec.Run("systemctl", "is-active", svc)
+		if err != nil || strings.TrimSpace(res.Stdout) != "active" {
+			status := ""
+			if res.Stdout != "" {
+				status = strings.TrimSpace(res.Stdout)
+			}
+			return adapter.VerifyReport{
+				Success: false,
+				Error:   fmt.Sprintf("service %q is not active after restart: %s", svc, status),
+			}, nil
+		}
+		return adapter.VerifyReport{
+			Success:  true,
+			NewState: map[string]any{"service_status": "active"},
+		}, nil
+	}
+	return adapter.VerifyReport{Success: true}, nil
+}
+
+func (a *SystemdAdapter) Probe(exec adapter.SSHExecutor) adapter.CapabilitySet {
+	caps := adapter.CapabilitySet{
+		AdapterID:   a.ID(),
+		Available:   map[string]string{},
+		Fallbacks:   map[string]string{},
+	}
+	for _, bin := range []string{"systemctl", "journalctl"} {
+		res, err := exec.Run("which", bin)
+		if err == nil && res.ExitCode == 0 {
+			caps.Available[bin] = strings.TrimSpace(res.Stdout)
+		} else {
+			caps.Unavailable = append(caps.Unavailable, bin)
+		}
+	}
+	return caps
+}
+
 func strParam(params adapter.Params, key string) string {
 	if v, ok := params[key]; ok {
 		return strings.TrimSpace(fmt.Sprintf("%v", v))
